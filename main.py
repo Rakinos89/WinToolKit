@@ -1,4 +1,4 @@
-"""WinToolKit v0.4: system monitoring and Windows maintenance."""
+"""WinToolKit v0.5: system monitoring and Windows maintenance."""
 import platform
 import queue
 import subprocess
@@ -8,6 +8,7 @@ from tkinter import messagebox
 import customtkinter as ctk
 import psutil
 
+from modules.cleanup import locations, scan, clean
 from modules.network import flush_dns
 from modules.system import REPAIR_COMMANDS, is_admin, relaunch_as_admin
 
@@ -18,12 +19,14 @@ ctk.set_default_color_theme("blue")
 class WinToolKit(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("WinToolKit v0.4")
+        self.title("WinToolKit v0.5")
         self.geometry("1050x690")
         self.minsize(850, 550)
         self.current_page = None
         self.events = queue.Queue()
         self.running_task = None
+        self.cleanup_selection = {}
+        self.cleanup_scan = None
         self.maintenance_log = ["Ready to run maintenance tasks."]
         self.admin = is_admin()
 
@@ -113,6 +116,21 @@ class WinToolKit(ctk.CTk):
                                    command=lambda t=task: self.start_task(t))
             button.pack(pady=5)
             self.task_buttons[task] = button
+        ctk.CTkLabel(self.content, text="Smart Cleanup (files older than 24 hours)",
+                     font=("Segoe UI", 18, "bold")).pack(pady=(12, 3))
+        self.cleanup_selection = {}
+        for name in locations():
+            var = ctk.BooleanVar(value=name == "User temporary files")
+            self.cleanup_selection[name] = var
+            ctk.CTkCheckBox(self.content, text=name, variable=var).pack(anchor="w", padx=30, pady=2)
+        controls = ctk.CTkFrame(self.content, fg_color="transparent")
+        controls.pack(pady=5)
+        self.cleanup_buttons = []
+        for label, mode in (("Scan", "scan"), ("Dry Run", "dry"), ("Clean Selected", "clean")):
+            button = ctk.CTkButton(controls, text=label, width=125,
+                                   command=lambda m=mode: self.start_cleanup(m))
+            button.pack(side="left", padx=5)
+            self.cleanup_buttons.append(button)
         self.update_task_buttons()
         self.maintenance_output = ctk.CTkTextbox(self.content, height=230)
         self.maintenance_output.pack(fill="both", expand=True, padx=25, pady=(15, 20))
@@ -122,7 +140,7 @@ class WinToolKit(ctk.CTk):
 
     def update_task_buttons(self):
         if self.current_page == "Maintenance":
-            for button in self.task_buttons.values():
+            for button in list(self.task_buttons.values()) + getattr(self, "cleanup_buttons", []):
                 button.configure(state="disabled" if self.running_task else "normal")
 
     def append_log(self, line):
@@ -166,6 +184,36 @@ class WinToolKit(ctk.CTk):
         self.append_log(f"\n--- Starting: {task} ---")
         threading.Thread(target=self.task_worker, args=(task,), daemon=True).start()
 
+    def start_cleanup(self, mode):
+        if self.running_task:
+            return
+        selected = {name for name, var in self.cleanup_selection.items() if var.get()}
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Choose at least one temporary folder.")
+            return
+        if mode == "clean":
+            if not self.cleanup_scan or self.cleanup_scan[0] != selected:
+                messagebox.showwarning("Scan first", "Scan these selections before cleaning.")
+                return
+            if not messagebox.askyesno("Confirm deletion",
+                    "Delete eligible files older than 24 hours from the selected temp folders?\n"
+                    "This cannot be undone. Open programs may still use some files."):
+                return
+        self.running_task = f"Cleanup: {mode}"
+        self.update_task_buttons()
+        self.append_log(f"\n--- Cleanup {mode}: {', '.join(sorted(selected))} ---")
+        threading.Thread(target=self.cleanup_worker, args=(mode, selected), daemon=True).start()
+
+    def cleanup_worker(self, mode, selected):
+        try:
+            if mode == "scan":
+                result = scan(selected)
+            else:
+                result = clean(selected, dry_run=mode == "dry")
+            self.events.put(("cleanup_done", mode, selected, result))
+        except Exception as exc:
+            self.events.put(("error", self.running_task, str(exc)))
+
     def task_worker(self, task):
         try:
             if task == "Flush DNS Cache":
@@ -195,6 +243,20 @@ class WinToolKit(ctk.CTk):
                 elif event[0] == "done":
                     _, task, code = event
                     self.append_log(f"--- {task}: {'completed (exit code 0)' if code == 0 else f'failed (exit code {code})'} ---")
+                    self.running_task = None
+                    self.update_task_buttons()
+                elif event[0] == "cleanup_done":
+                    _, mode, selected, result = event
+                    if mode == "scan":
+                        self.cleanup_scan = (selected, result)
+                    else:
+                        self.cleanup_scan = None
+                    for name, values in result.items():
+                        count, size = values[:2]
+                        skipped = f", skipped: {values[2]}" if len(values) > 2 else ""
+                        self.append_log(f"{name}: {count} files, {size / 1048576:.2f} MiB{skipped}")
+                    self.append_log("Dry run only; no files deleted." if mode == "dry" else
+                                    "Scan finished." if mode == "scan" else "Cleanup finished.")
                     self.running_task = None
                     self.update_task_buttons()
                 elif event[0] == "error":
