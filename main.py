@@ -1,4 +1,4 @@
-"""WinToolKit v0.6: Windows dashboard and maintenance utilities."""
+"""WinToolKit v0.7: Windows dashboard, maintenance and gaming tools."""
 import os
 import platform
 import queue
@@ -10,11 +10,12 @@ import customtkinter as ctk
 import psutil
 
 from modules.activity import LOG_PATH, read_recent, record
+from modules.gaming import gpu_info, game_processes, power_plans, activate_power_plan, tcp_latency
 from modules.cleanup import locations, scan, clean
 from modules.network import flush_dns
 from modules.system import REPAIR_COMMANDS, is_admin, relaunch_as_admin
 
-VERSION = '0.6.0'
+VERSION = '0.7.0'
 ctk.set_appearance_mode('dark')
 ctk.set_default_color_theme('blue')
 
@@ -34,6 +35,9 @@ class WinToolKit(ctk.CTk):
         self.cleanup_scan = None
         self.maintenance_log = ['Ready to run maintenance tasks.']
         self.task_buttons = []
+        self.gaming_busy = False
+        self.gaming_plans = {}
+        self.last_gaming_refresh = 0
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -64,6 +68,8 @@ class WinToolKit(ctk.CTk):
             self.update_dashboard()
         elif page == 'Maintenance':
             self.build_maintenance()
+        elif page == 'Gaming':
+            self.build_gaming()
         elif page == 'Activity':
             self.build_activity()
         elif page == 'Settings':
@@ -71,6 +77,99 @@ class WinToolKit(ctk.CTk):
             ctk.CTkLabel(self.content, text=f'Activity log: {LOG_PATH}', wraplength=650).pack(pady=12)
         else:
             ctk.CTkLabel(self.content, text=f'{page} tools coming in a future release.').pack(pady=25)
+
+    def build_gaming(self):
+        """Gaming diagnostics. All slow system calls run off the UI thread."""
+        ctk.CTkLabel(self.content, text='Gaming & Performance',
+                     font=('Segoe UI', 18, 'bold')).pack(pady=(0, 10))
+        self.gaming_status = ctk.CTkLabel(self.content, text='Ready to check gaming performance.')
+        self.gaming_status.pack(pady=5)
+        self.gpu_label = ctk.CTkLabel(self.content, text='GPU: Checking...', wraplength=680)
+        self.gpu_label.pack(pady=4)
+        self.gpu_usage_label = ctk.CTkLabel(self.content, text='GPU load: Checking...')
+        self.gpu_usage_label.pack(pady=2)
+        self.vram_label = ctk.CTkLabel(self.content, text='VRAM: Checking...')
+        self.vram_label.pack(pady=2)
+        self.games_label = ctk.CTkLabel(self.content, text='Known running games: Checking...', wraplength=680)
+        self.games_label.pack(pady=8)
+        self.latency_label = ctk.CTkLabel(self.content, text='TCP latency: Not tested')
+        self.latency_label.pack(pady=5)
+        ctk.CTkButton(self.content, text='Test Network Latency (1.1.1.1:443)',
+                      command=self.start_latency_test).pack(pady=5)
+        ctk.CTkButton(self.content, text='Refresh GPU and Game Processes',
+                      command=self.start_gaming_refresh).pack(pady=5)
+        ctk.CTkLabel(self.content, text='Windows Power Plan',
+                     font=('Segoe UI', 17, 'bold')).pack(pady=(14, 6))
+        self.power_plan_menu = ctk.CTkOptionMenu(self.content, values=['Loading...'])
+        self.power_plan_menu.pack(pady=4)
+        ctk.CTkButton(self.content, text='Apply Selected Power Plan',
+                      command=self.request_power_plan).pack(pady=5)
+        ctk.CTkButton(self.content, text='Refresh Power Plans',
+                      command=self.start_power_plan_refresh).pack(pady=4)
+        ctk.CTkLabel(self.content,
+                     text='GPU load and VRAM monitoring currently support NVIDIA via nvidia-smi. '
+                          'Other adapters show their name, but live metrics may be unavailable. '
+                          'Network test measures TCP connection time, not game ping.',
+                     wraplength=680, text_color='gray70').pack(padx=25, pady=14)
+        self.start_gaming_refresh()
+        self.start_power_plan_refresh()
+
+    def start_gaming_refresh(self):
+        if self.gaming_busy:
+            return
+        self.gaming_busy = True
+        if self.current_page == 'Gaming':
+            self.gaming_status.configure(text='Refreshing GPU and running games...')
+        threading.Thread(target=self.gaming_worker, daemon=True).start()
+
+    def gaming_worker(self):
+        try:
+            self.events.put(('gaming_data', gpu_info(), game_processes()))
+        except Exception as exc:
+            self.events.put(('gaming_error', str(exc)))
+
+    def start_latency_test(self):
+        if self.current_page == 'Gaming':
+            self.latency_label.configure(text='TCP latency: Testing...')
+        threading.Thread(target=self.latency_worker, daemon=True).start()
+
+    def latency_worker(self):
+        try:
+            self.events.put(('latency', f'{tcp_latency()} ms (TCP connection)'))
+        except OSError as exc:
+            self.events.put(('latency', f'Unavailable: {exc}'))
+
+    def start_power_plan_refresh(self):
+        threading.Thread(target=self.power_plan_worker, daemon=True).start()
+
+    def power_plan_worker(self):
+        try:
+            self.events.put(('power_plans', power_plans()))
+        except Exception as exc:
+            self.events.put(('gaming_error', f'Power plans: {exc}'))
+
+    def request_power_plan(self):
+        if self.running_task:
+            messagebox.showwarning('Task running', 'Wait for the maintenance task to finish.')
+            return
+        choice = self.power_plan_menu.get()
+        guid = self.gaming_plans.get(choice)
+        if not guid:
+            messagebox.showinfo('No plan selected', 'Refresh and select an available power plan.')
+            return
+        if not messagebox.askyesno('Change Windows power plan',
+                                   f'Activate {choice}? This changes your Windows power settings.'):
+            return
+        self.running_task = 'Change power plan'
+        self.append_log(f'--- Activating power plan: {choice} ---')
+        threading.Thread(target=self.power_plan_worker_apply, args=(guid,), daemon=True).start()
+
+    def power_plan_worker_apply(self, guid):
+        try:
+            activate_power_plan(guid)
+            self.events.put(('power_applied',))
+        except Exception as exc:
+            self.events.put(('error', 'Change power plan', str(exc)))
 
     def build_dashboard(self):
         ctk.CTkLabel(self.content, text='Live System Overview', font=('Segoe UI', 18, 'bold')).pack(pady=(0, 12))
@@ -307,6 +406,36 @@ class WinToolKit(ctk.CTk):
                                     'Scan finished.' if mode == 'scan' else 'Cleanup finished.')
                     self.running_task = None
                     self.update_task_buttons()
+                elif event[0] == 'gaming_data':
+                    self.gaming_busy = False
+                    _, gpu, games = event
+                    if self.current_page == 'Gaming':
+                        self.gaming_status.configure(text='Gaming diagnostics updated.')
+                        self.gpu_label.configure(text=f"GPU: {gpu['name']}")
+                        self.gpu_usage_label.configure(text=f"GPU load: {gpu['utilization']}")
+                        self.vram_label.configure(text=f"VRAM: {gpu['vram']}")
+                        text = '; '.join(f'{name} (PID {pid}, {mib} MiB RAM)' for name, pid, mib in games)
+                        self.games_label.configure(text='Known running games: ' + (text or 'None detected'))
+                elif event[0] == 'gaming_error':
+                    self.gaming_busy = False
+                    if self.current_page == 'Gaming':
+                        self.gaming_status.configure(text=f'Diagnostics: {event[1]}')
+                elif event[0] == 'latency':
+                    if self.current_page == 'Gaming':
+                        self.latency_label.configure(text=f'TCP latency: {event[1]}')
+                elif event[0] == 'power_plans':
+                    plans = event[1]
+                    self.gaming_plans = {f'{name} [{guid[:8]}]': guid for guid, name, active in plans}
+                    if self.current_page == 'Gaming':
+                        labels = list(self.gaming_plans) or ['No power plans found']
+                        self.power_plan_menu.configure(values=labels)
+                        active = next((f'{name} [{guid[:8]}]' for guid, name, is_active in plans if is_active), labels[0])
+                        self.power_plan_menu.set(active)
+                elif event[0] == 'power_applied':
+                    self.append_log('--- Power plan activated successfully ---')
+                    self.running_task = None
+                    self.update_task_buttons()
+                    self.start_power_plan_refresh()
                 elif event[0] == 'error':
                     _, task, error = event
                     self.append_log(f'ERROR ({task}): {error}')
