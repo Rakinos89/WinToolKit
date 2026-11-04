@@ -9,12 +9,14 @@ The project is developed incrementally, with a focus on practical functionality,
 ## Features
 
 ### System Dashboard
+
 - Live CPU and RAM usage monitoring
 - Disk usage monitoring
 - Hardware and operating system information
 - Dark-themed graphical interface
 
 ### Windows Maintenance
+
 - DISM RestoreHealth
 - System File Checker (SFC)
 - DNS cache flushing
@@ -22,6 +24,7 @@ The project is developed incrementally, with a focus on practical functionality,
 - Background task execution with progress output
 
 ### Smart Cleanup
+
 - Scan user and Windows temporary directories
 - Identify temporary files older than 24 hours
 - Preview cleanup results with Dry Run
@@ -29,6 +32,7 @@ The project is developed incrementally, with a focus on practical functionality,
 - Skip inaccessible files and symbolic links
 
 ### Gaming & Performance
+
 - GPU adapter detection
 - NVIDIA GPU utilization and VRAM monitoring via `nvidia-smi`
 - Detection of selected running game processes
@@ -36,6 +40,7 @@ The project is developed incrementally, with a focus on practical functionality,
 - TCP network latency testing
 
 ### Activity Logging
+
 - Persistent maintenance activity history
 - Task results and error reporting
 - Logs stored locally outside the repository
@@ -48,6 +53,26 @@ The project is developed incrementally, with a focus on practical functionality,
 - psutil
 
 Some system maintenance operations require administrator privileges.
+
+## Screenshots
+
+### Dashboard
+
+Live system monitoring with CPU, RAM, disk usage, and hardware information.
+
+![WinToolKit Dashboard](assets/screenshots/wintoolkit_dashboard.png)
+
+### Maintenance
+
+Windows repair utilities, Smart Cleanup, and activity logging.
+
+![WinToolKit Maintenance](assets/screenshots/wintoolkit_maintenance.png)
+
+### Gaming
+
+GPU information, game process detection, power plans, and network latency tools.
+
+![WinToolKit Gaming](assets/screenshots/wintoolkit_gaming.png)
 
 ## Installation
 
