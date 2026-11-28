@@ -15,6 +15,8 @@ from modules.activity import LOG_PATH, read_recent, record
 from modules.privacy import load_privacy, save_privacy, redact
 from modules.appearance import ACCENTS, DEFAULT_ACCENT, load_accent, save_accent
 from modules.disk_health import disk_health_snapshot
+from modules.hardware_history import HardwareHistory
+from modules.hardware_graph import HardwareGraph
 from modules.hardware_monitor import system_snapshot, volume_snapshot
 from modules.hardware_format import format_system, format_volume, format_percent
 from modules.gaming import gpu_info, game_processes, power_plans, activate_power_plan, tcp_latency
@@ -85,6 +87,7 @@ class RaksToolKit(ctk.CTk):
         self.power_plan_buttons = []
         self.last_gaming_refresh = 0
         self.dashboard_busy = False
+        self.hardware_history = HardwareHistory()
         self.storage_busy = False
         self.network_refreshing = False
         self.network_snapshot = None
@@ -146,7 +149,9 @@ class RaksToolKit(ctk.CTk):
                         or widget in getattr(self, 'maintenance_tab_buttons', {}).values()):
                     continue
                 try:
-                    if isinstance(widget, ctk.CTkSegmentedButton):
+                    if isinstance(widget, HardwareGraph):
+                        widget.set_theme(primary)
+                    elif isinstance(widget, ctk.CTkSegmentedButton):
                         widget.configure(selected_color=primary, selected_hover_color=hover,
                                          unselected_color='#454545', unselected_hover_color='#555555')
                     elif isinstance(widget, ctk.CTkButton):
@@ -564,8 +569,9 @@ class RaksToolKit(ctk.CTk):
         cards = ctk.CTkFrame(scroll, fg_color='transparent')
         cards.pack(fill='x')
         self.stats = {}
+        self.hardware_graphs = {}
         primary, _ = ACCENTS.get(self.accent_color, ACCENTS[DEFAULT_ACCENT])
-        for title in ('CPU', 'RAM', 'C: Drive'):
+        for metric, title in enumerate(('CPU', 'RAM', 'C: Drive'), start=1):
             card = ctk.CTkFrame(cards)
             card.pack(side='left', expand=True, fill='both', padx=6)
             ctk.CTkLabel(card, text=title, font=('Segoe UI', 16, 'bold')).pack(pady=(18, 5))
@@ -573,7 +579,16 @@ class RaksToolKit(ctk.CTk):
             label.pack(pady=5)
             bar = ctk.CTkProgressBar(card, progress_color=primary)
             bar.set(0)
-            bar.pack(fill='x', padx=16, pady=(8, 20))
+            bar.pack(fill='x', padx=16, pady=(8, 6))
+            background = card.cget('fg_color')
+            if isinstance(background, (tuple, list)):
+                background = background[1]
+            graph = HardwareGraph(card, metric, accent=primary, background=background, width=120)
+            graph.pack(fill='x', padx=16, pady=(4, 2))
+            graph.update_history(self.hardware_history.snapshot())
+            ctk.CTkLabel(card, text='Last 60 seconds', text_color='gray70',
+                         font=('Segoe UI', 11)).pack(pady=(0, 8))
+            self.hardware_graphs[title] = graph
             self.stats[title] = (label, bar)
         info = ctk.CTkFrame(scroll)
         info.pack(fill='x', padx=6, pady=15)
@@ -615,8 +630,12 @@ class RaksToolKit(ctk.CTk):
             return
         data = format_system(system)
         c_drive = next((v for v in volumes if v.get('device', '').rstrip('\\/').upper() == 'C:'), {})
-        for title, value in (('CPU', system.get('cpu_percent')), ('RAM', system.get('memory_percent')), ('C: Drive', c_drive.get('percent'))):
+        readings = (system.get('cpu_percent'), system.get('memory_percent'), c_drive.get('percent'))
+        self.hardware_history.append(*readings)
+        history = self.hardware_history.snapshot()
+        for title, value in zip(('CPU', 'RAM', 'C: Drive'), readings):
             self.set_dashboard_metric(*self.stats[title], value)
+            self.hardware_graphs[title].update_history(history)
         details = {'Operating system': data['os_name'], 'Processor': data['cpu_name'],
                    'CPU cores': f"{data['physical_cores']} physical / {data['logical_cores']} logical",
                    'CPU frequency': data['cpu_frequency_mhz'], 'Total memory': data['memory_total_bytes'],
